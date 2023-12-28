@@ -149,16 +149,14 @@ export ent_S
 Entaglement entropy of gaussian state with system A chosen to be the sites {i}.
 """
 function ent_S(s::FreeFermionState, i::AbstractVector{<:Integer})
-    B = eltype(s) <: Real ? Float64.(s.B[i,:]) : ComplexF64.(s.B[i,:])
+    B = s.B[i,:]
     vals = svdvals(B).^2
     EE = 0.0
     for x in vals
-        if x < 1.0
-            x < 1e-14 && continue
-            EE -= x*log(x)+(1-x)*log(1-x)
-        else
-            @assert x-1 < 1e-6 "Got a Schmidt value λ = $x."
-        end
+        x > 1.0 && x-1.0 < 1e-6 && error("Got a Schmidt value λ = $x.")
+        x < 1e-14 && continue
+        (y = 1.0 - x) < 1e-14 && continue
+        EE -= x * log(x) + y * log(y)
     end
     EE
 end
@@ -216,6 +214,10 @@ struct QuasiMode{T<:Number}
     I::Vector{Int64}
     V::Vector{T}
     L::Int64
+    function QuasiMode(I::AbstractVector{<:Integer}, V::AbstractVector{T}, L::Integer) where T <: Number 
+        ind = [mod(i-1, L)+1 for i in I]
+        new{T}(ind, V, Int64(L))
+    end
 end
 #----------------------------------------------------------------------------------------------------
 vector(qm::QuasiMode) = sparsevec(qm.I, qm.V, qm.L)
@@ -227,83 +229,75 @@ inner(qm::QuasiMode, s::FreeFermionState) = vec(qm.V' * s.B[qm.I, :])
 # Quantum Jumps
 #----------------------------------------------------------------------------------------------------
 """
-Correaction operator if jump does not happen
-    P = exp(-γ⋅dt/2)d⁺d + dd⁺
-"""
-function particle_exp(qm::QuasiMode, γdt::Real)
-    v = hcat(qm.V, nullspace(qm.V'))
-    d = ones(length(qm.I))
-    d[1] = exp(-γdt/2)
-    v * Diagonal(d) * v'
-end
-#----------------------------------------------------------------------------------------------------
-"""
-Correaction operator if jump does not happen
-    P = d⁺d + exp(-γ⋅dt/2)dd⁺
-"""
-function hole_exp(qm::QuasiMode, γdt::Real)
-    v = hcat(qm.V, nullspace(qm.V'))
-    d = fill(exp(-γdt/2), length(qm.I))
-    d[1] = 1
-    v * Diagonal(d) * v'
-end
-#----------------------------------------------------------------------------------------------------
-"""
-abstract type for quantum jumps that preserve free fermion structure, including:
-- QJParticle: L = d⁺d 
-- QJHole    : L = dd⁺
-- QJDrain   : L = d 
-- QJSource  : L = d⁺
+abstract type for quantum jumps that preserve free fermion structure.
 """
 abstract type QuantumJump end
-export QJParticle, QJHole, QJDrain, QJSource
+(qj::QuantumJump)(I, V, L, γdt) = qj(QuasiMode(I, V, L), γdt)
 #----------------------------------------------------------------------------------------------------
+export QJParticle
+"""
+QJParticle: L = d⁺d
+"""
 struct QJParticle{T1, T2, T3<:Real} <: QuantumJump
     M::QuasiMode{T1}
     P::Matrix{T2}
     γdt::T3
 end
+QJParticle(M::QuasiMode, γdt::Real) = QJParticle(M, particle_exp(M, γdt), γdt)
 #----------------------------------------------------------------------------------------------------
+export QJHole
+"""
+QJHole: L = dd⁺
+"""
 struct QJHole{T1, T2, T3<:Real} <: QuantumJump
     M::QuasiMode{T1}
     P::Matrix{T2}
     γdt::T3
 end
+QJHole(M::QuasiMode, γdt::Real) = QJHole(M, hole_exp(M, γdt), γdt)
 #----------------------------------------------------------------------------------------------------
+export QJDrain
+"""
+QJDrain: L = d 
+"""
 struct QJDrain{T1, T2, T3<:Real} <: QuantumJump
     M::QuasiMode{T1}
     P::Matrix{T2}
     γdt::T3
 end
+QJDrain(M::QuasiMode, γdt::Real) = QJDrain(M, particle_exp(M, γdt), γdt)
 #----------------------------------------------------------------------------------------------------
+export QJSource
+"""
+QJSource: L = d⁺
+"""
 struct QJSource{T1, T2, T3<:Real} <: QuantumJump
     M::QuasiMode{T1}
     P::Matrix{T2}
     γdt::T3
 end
+QJSource(M::QuasiMode, γdt::Real) = QJSource(M, hole_exp(M, γdt), γdt)
 #----------------------------------------------------------------------------------------------------
-function QJParticle(I::AbstractVector{<:Integer}, V::AbstractVector, L::Integer, γdt::Real)
-    M = QuasiMode(I, V, L) 
-    P = particle_exp(M, γdt)
-    QJParticle(M, P, γdt)
+"""
+Correaction operator if jump does not happen
+    P = sqrt(1-γ⋅dt)d⁺d + dd⁺
+"""
+function particle_exp(qm::QuasiMode, γdt::Real)
+    v = hcat(qm.V, nullspace(qm.V'))
+    d = ones(length(qm.I))
+    d[1] = sqrt(1-γdt)
+    v * Diagonal(d) * v'
 end
 #----------------------------------------------------------------------------------------------------
-function QJHole(I::AbstractVector{<:Integer}, V::AbstractVector, L::Integer, γdt::Real)
-    M = QuasiMode(I, V, L) 
-    P = hole_exp(M, γdt)
-    QJHole(M, P, γdt)
-end
-#----------------------------------------------------------------------------------------------------
-function QJDrain(I::AbstractVector{<:Integer}, V::AbstractVector, L::Integer, γdt::Real)
-    M = QuasiMode(I, V, L) 
-    P = particle_exp(M, γdt)
-    QJDrain(M, P, γdt)
-end
-#----------------------------------------------------------------------------------------------------
-function QJSource(I::AbstractVector{<:Integer}, V::AbstractVector, L::Integer, γdt::Real)
-    M = QuasiMode(I, V, L) 
-    P = hole_exp(M, γdt)
-    QJSource(M, P, γdt)
+"""
+Correaction operator if jump does not happen
+    P = d⁺d + sqrt(1-γ⋅dt)dd⁺
+"""
+function hole_exp(qm::QuasiMode, γdt::Real)
+    v = hcat(qm.V, nullspace(qm.V'))
+    d = fill(sqrt(1-γdt), length(qm.I))
+    d[1] = 1
+    v * Diagonal(d) * v'
 end
 
 
@@ -341,7 +335,9 @@ function *(qj::QuantumJump, s::FreeFermionState)
 end
 #----------------------------------------------------------------------------------------------------
 """
-Apply multiple quantum jumps on a free fermion state
+Apply multiple quantum jumps on a free fermion state.
+
+Note that indices of the jumps should have no overlap.
 """
 function *(qjs::AbstractVector{<:QuantumJump}, s::FreeFermionState)
     normQ = true
@@ -387,6 +383,8 @@ end
 #----------------------------------------------------------------------------------------------------
 """
 Apply a list of quantum jumps with condional feedback.
+
+Note that indices of the jumps should have no overlap.
 """
 function *(cjs::AbstractVector{<:ConditionalJump}, s::FreeFermionState)
     normQ = true
@@ -417,7 +415,8 @@ Wiener process:
 """
 function wiener!(qms::AbstractVector{<:QuasiMode}, s::FreeFermionState, γdt::Real)
     sgdt = sqrt(γdt)
-    Threads.@threads for qm in qms
+    #Threads.@threads 
+    for qm in qms
         p = inner(qm, s)
         a = randn() * sgdt + (2 * norm(p)^2 - 1) * γdt
         cv = (exp(a) - 1) * qm.V

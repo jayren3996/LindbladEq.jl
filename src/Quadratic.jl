@@ -1,5 +1,3 @@
-export lindblad, densitymatrix, expectation
-
 #---------------------------------------------------------------------------------------------------
 # Covariance matrix
 #---------------------------------------------------------------------------------------------------
@@ -208,7 +206,12 @@ function quadraticlindblad_from_fermion(;H::AbstractMatrix, L=nothing, M=nothing
         [(c+d)/2; 1im(d-c)/2]
     end
     Mm = isnothing(M) ? Matrix{Float64}[] : majoranaform.(M)
-    Im = isnothing(I) ? Vector{Int64}[] : [[ind; ind .+ N] for ind in I]
+    Im = if isnothing(I)
+        Vector{Int64}[]
+    else
+        inds = [mod.(i .- 1, N) .+ 1 for i in I] 
+        [[ind; ind .+ N] for ind in inds]
+    end
     quadraticlindblad(Hm, Lm, Mm, Im)
 end
 
@@ -248,6 +251,7 @@ function fermionlindblad(
 )
     Z = conj.(M)
     X = -1im * conj(H) 
+    I = [mod.(i .- 1, size(H,1)) .+ 1 for i in I]
     for (i, ind) in enumerate(I)
         X[ind, ind] .-= Z[i]^2 / 2
     end
@@ -263,4 +267,17 @@ function *(fl::FermionLindblad, G::AbstractMatrix)
     out
 end
 
-
+#---------------------------------------------------------------------------------------------------
+# Differential equations
+#---------------------------------------------------------------------------------------------------
+export lindblad_evo
+function lindblad_evo(
+    lind::Union{<:QuardraticLindblad,<:FermionLindblad}, 
+    Γ::Matrix, t::AbstractVector{<:Real};
+    reltol=1e-8, abstol=1e-8
+)
+    tspan = (0.0, t[end])
+    prob = ODEProblem((u, p, t) -> (lind*u), Γ, tspan)
+    sol = solve(prob, Tsit5(); reltol, abstol,saveat=t)
+    sol.u
+end

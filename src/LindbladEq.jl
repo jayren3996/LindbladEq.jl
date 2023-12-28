@@ -1,6 +1,6 @@
 module LindbladEq
 
-using LinearAlgebra, SparseArrays, KrylovKit
+using LinearAlgebra, SparseArrays, KrylovKit, DifferentialEquations
 import Base.:*
 
 include("FreeFermion.jl")

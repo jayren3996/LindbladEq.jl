@@ -173,9 +173,9 @@ function ent_S(
     i::AbstractVector{<:Integer}, 
     j::AbstractVector{<:Integer}
 )
-    SA = entropy(s, i)
-    SB = entropy(s, j)
-    SAB = entropy(s, vcat(i,j))
+    SA = ent_S(s, i)
+    SB = ent_S(s, j)
+    SAB = ent_S(s, vcat(i,j))
     SA + SB - SAB
 end
 #----------------------------------------------------------------------------------------------------
@@ -208,6 +208,7 @@ end
 #----------------------------------------------------------------------------------------------------
 # Quasi paritcle
 #----------------------------------------------------------------------------------------------------
+export QuasiMode
 """
 Quasi Mode d⁺ = ∑ Vⱼ cⱼ⁺
 """
@@ -219,6 +220,11 @@ end
 #----------------------------------------------------------------------------------------------------
 vector(qm::QuasiMode) = sparsevec(qm.I, qm.V, qm.L)
 inner(qm::QuasiMode, s::FreeFermionState) = vec(qm.V' * s.B[qm.I, :])
+
+
+
+#----------------------------------------------------------------------------------------------------
+# Quantum Jumps
 #----------------------------------------------------------------------------------------------------
 """
 Correaction operator if jump does not happen
@@ -241,10 +247,6 @@ function hole_exp(qm::QuasiMode, γdt::Real)
     d[1] = 1
     v * Diagonal(d) * v'
 end
-
-
-#----------------------------------------------------------------------------------------------------
-# Quantum Jumps
 #----------------------------------------------------------------------------------------------------
 """
 abstract type for quantum jumps that preserve free fermion structure, including:
@@ -387,20 +389,44 @@ end
 Apply a list of quantum jumps with condional feedback.
 """
 function *(cjs::AbstractVector{<:ConditionalJump}, s::FreeFermionState)
-    vs = [inner(cj.J.M, s) for cj in cjs]
-    for (i, cj) in enumerate(cjs)
-        ind = cj.J.M.I
-        if rand() < real(dot(vs[i], vs[i])) * cj.J.γdt
-            s = jump(cj.J, s, v, renorm=false)
+    normQ = true
+    for cj in cjs
+        qj = cj.J
+        ind = qj.M.I
+        v = inner(qj.M, s)
+        if rand() < real(dot(v, v)) * qj.γdt
+            s = jump(qj, s, v)
             s.B[ind, :] .= cj.U * s.B[ind, :]
+            normQ = true
         else
-            s.B[ind, :] .= cj.J.P * s.B[ind, :] 
+            s.B[ind, :] .= qj.P * s.B[ind, :]
+            normQ = false
         end
     end
-    FreeFermionState(orthogonalize(s.B), true)
+    normQ ? s : FreeFermionState(orthogonalize(s.B), true)
 end
 
 
+#----------------------------------------------------------------------------------------------------
+# Gaussian SSE
+#----------------------------------------------------------------------------------------------------
+export wiener!
+"""
+Wiener process:
+    ψ → exp{∑ⱼ[δWⱼ + (2⟨nⱼ⟩-1)γ δt]nⱼ} ψ
+"""
+function wiener!(qms::AbstractVector{<:QuasiMode}, s::FreeFermionState, γdt::Real)
+    sgdt = sqrt(γdt)
+    Threads.@threads for qm in qms
+        p = inner(qm, s)
+        a = randn() * sgdt + (2 * norm(p)^2 - 1) * γdt
+        cv = (exp(a) - 1) * qm.V
+        for j in axes(s.B, 2)
+            s.B[qm.I, j] += cv * p[j]
+        end
+    end
+    s.B .= orthogonalize(s.B)
+end
 
 #----------------------------------------------------------------------------------------------------
 # Projective measurement

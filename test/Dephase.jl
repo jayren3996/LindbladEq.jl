@@ -141,5 +141,3 @@ function main(;d=[1,3,1],times=1000)
 
     den1, den2, den3, den4 
 end
-
-

@@ -413,18 +413,39 @@ export wiener!
 Wiener process:
     ψ → exp{∑ⱼ[δWⱼ + (2⟨nⱼ⟩-1)γ δt]nⱼ} ψ
 """
-function wiener!(qms::AbstractVector{<:QuasiMode}, s::FreeFermionState, γdt::Real)
+function wiener!(
+    qms::AbstractVector{<:QuasiMode}, s::FreeFermionState, γdt::Real; 
+    nthreads=Threads.nthreads()
+)
     sgdt = sqrt(γdt)
-    #Threads.@threads 
-    for qm in qms
-        p = inner(qm, s)
-        a = randn() * sgdt + (2 * norm(p)^2 - 1) * γdt
-        cv = (exp(a) - 1) * qm.V
-        for j in axes(s.B, 2)
-            s.B[qm.I, j] += cv * p[j]
+    Threads.@threads for qmsi in dividerange(qms, nthreads)
+        for qm in qmsi
+            p = inner(qm, s)
+            a = randn() * sgdt + (2 * norm(p)^2 - 1) * γdt
+            cv = (exp(a) - 1) * qm.V
+            for j in axes(s.B, 2)
+                s.B[qm.I, j] += cv * p[j]
+            end
         end
     end
     s.B .= orthogonalize(s.B)
+end
+function dividerange(vec::AbstractVector, nthreads::Integer)
+    list = Vector{Vector{eltype(vec)}}(undef, nthreads)
+    eachthreads, left = divrem(length(vec), nthreads)
+    start = 1
+    for i = 1:left
+        stop  = start + eachthreads
+        list[i] = vec[start:stop]
+        start = stop+1
+    end
+    for i = left+1:nthreads-1
+        stop  = start + eachthreads - 1
+        list[i] = vec[start:stop]
+        start = stop+1
+    end
+    list[nthreads] = vec[start:end]
+    list
 end
 
 #----------------------------------------------------------------------------------------------------

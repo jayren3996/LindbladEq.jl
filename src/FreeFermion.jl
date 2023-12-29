@@ -153,7 +153,7 @@ function ent_S(s::FreeFermionState, i::AbstractVector{<:Integer})
     vals = svdvals(B).^2
     EE = 0.0
     for x in vals
-        x > 1.0 && x-1.0 < 1e-6 && error("Got a Schmidt value λ = $x.")
+        x > 1.0 && x-1.0 > 1e-6 && error("Got a Schmidt value λ = $x.")
         x < 1e-14 && continue
         (y = 1.0 - x) < 1e-14 && continue
         EE -= x * log(x) + y * log(y)

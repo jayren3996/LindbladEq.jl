@@ -43,7 +43,8 @@ function jump_den_evo(;
         s = deepcopy(s0)
         den = zeros(L, N)
         for k = 1:N 
-            s = ls * (Ut * s)
+            apply!(Ut, s)
+            apply!(ls, s)
             den[:, k] = diag(s)
         end
         den
@@ -67,7 +68,7 @@ function qsd_den_evo(;
         s = deepcopy(s0)
         den = zeros(L, N)
         for k = 1:N 
-            s = Ut * s
+            apply!(Ut, s)
             wiener!(qms, s, γ*dt)
             den[:, k] = diag(s)
         end
@@ -129,15 +130,23 @@ function fermion_den_evo(;
 end
 
 function main(;d=[1,3,1],times=1000)
+    # 2.45 s
     @time den1 = majorana_den_evo(;d)
+    # 1.59 s
     @time den2 = fermion_den_evo(;d)
     println("Majorana vs Fermion: $(norm(den1-den2))")
 
+    # 76.57 s
+    # A_mul_B!: 37.73 s
     @time den3 = jump_den_evo(;d,times)
     println("Jump vs Fermion: $(norm(den3-den2))")
 
+    # 98.70 s
+    # A_mul_B!: 78.53 s
     @time den4 = qsd_den_evo(;d,times)
     println("QSD vs Fermion: $(norm(den4-den2))")
 
     den1, den2, den3, den4 
 end
+
+res = main();

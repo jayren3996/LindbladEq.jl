@@ -1,6 +1,6 @@
 include("LinAlg.jl")
 #----------------------------------------------------------------------------------------------------
-# Free fermion States
+# Free Fermion States
 #----------------------------------------------------------------------------------------------------
 export FreeFermionState
 """
@@ -11,12 +11,9 @@ Represented by a matrix `B`,
     bₖ⁺ = ∑ᵢ cᵢ⁺ Bᵢₖ.
 A `FreeFermionState` object `s` can be access as a matrix.
 The element `s[i,j]` is the two-point function ⟨cᵢ⁺cⱼ⟩.
-
-The boolean value `N` keeps track of the orthogonality of the representation.
 """
-struct FreeFermionState{T<:Number}
-    B::Matrix{T}    # Matrix representation of free modes
-    N::Bool         # Whether normalized
+mutable struct FreeFermionState{T<:Number}
+    B::Matrix{T}
 end
 #----------------------------------------------------------------------------------------------------
 """
@@ -26,42 +23,34 @@ Initialize FreeFermionState with given data type, particle positions and system 
 
 Inputs:
 -------
-dtype: data type of representing matrix B.
 pos  : vector of occupied positions.
 L    : length.
+dtype: data type of representing matrix B.
 """
-function FreeFermionState(dtype::DataType, pos::AbstractVector{<:Integer}, L::Integer)
+function FreeFermionState(pos::AbstractVector{<:Integer}, L::Integer; dtype::DataType=ComplexF64)
     B = zeros(dtype, L, length(pos))
-    for i = 1:length(pos)
-        B[pos[i], i] = 1
+    for (i, ind) in enumerate(pos)
+        B[ind, i] = one(dtype)
     end
-    FreeFermionState(B, true)
-end
-#----------------------------------------------------------------------------------------------------
-"""
-    FreeFermionState(pos::AbstractVector{<:Integer}, L::Integer) 
-
-Initialize FreeFermionState with given particle positions and system length.
-"""
-function FreeFermionState(pos::AbstractVector{<:Integer}, L::Integer) 
-    FreeFermionState(ComplexF64, pos, L)
+    FreeFermionState(B)
 end
 #----------------------------------------------------------------------------------------------------
 """
     FreeFermionState(dtype::DataType, vec::AbstractVector{Bool})
 
 Initialize FreeFermionState with vector indicating particle positions.
+
+Inputs:
+-------
+pos  : vector of Boolean values indicating whether a site is occupied.
+dtype: data type of representing matrix B.
 """
-function FreeFermionState(dtype::DataType, vec::AbstractVector{Bool})
+function FreeFermionState(vec::AbstractVector{Bool}; dtype::DataType=ComplexF64)
     pos = Int64[]
-    for i in eachindex(vec)
-        vec[i] && push!(pos, i)
+    for (i, b) in enumerate(vec)
+        b && push!(pos, i)
     end
-    FreeFermionState(dtype, pos, length(vec))
-end
-#----------------------------------------------------------------------------------------------------
-function FreeFermionState(vec::AbstractVector{Bool}) 
-    FreeFermionState(ComplexF64, vec)
+    FreeFermionState(pos, length(vec); dtype)
 end
 #----------------------------------------------------------------------------------------------------
 """
@@ -88,16 +77,12 @@ function FreeFermionState(;L::Integer, N::Integer, config::String="Z2")
     FreeFermionState(pos, L)
 end
 
+
 #----------------------------------------------------------------------------------------------------
 # Properties
 #----------------------------------------------------------------------------------------------------
-function Base.eltype(::FreeFermionState{T}) where T 
-    return T
-end
-#----------------------------------------------------------------------------------------------------
-function Base.length(s::FreeFermionState) 
-    return size(s.B, 1)
-end
+Base.eltype(::FreeFermionState{T}) where {T} = T
+Base.length(s::FreeFermionState) = size(s.B, 1)
 #----------------------------------------------------------------------------------------------------
 """
 Compute correlation ⟨cᵢ⁺cⱼ⟩
@@ -134,14 +119,6 @@ function LinearAlgebra.rank(s::FreeFermionState)
     return size(s.B, 2)
 end
 #----------------------------------------------------------------------------------------------------
-orthogonalize(B::AbstractMatrix) = Matrix(qr(B).Q)
-"""
-Return the normalized FreeFermionState.
-"""
-function LinearAlgebra.normalize(s::FreeFermionState) 
-    s.N ? s : FreeFermionState(orthogonalize(s.B), true)
-end
-#----------------------------------------------------------------------------------------------------
 export ent_S
 """
     entropy(s::FreeFermionState, i::AbstractVector{<:Integer})
@@ -149,12 +126,12 @@ export ent_S
 Entaglement entropy of gaussian state with system A chosen to be the sites {i}.
 """
 function ent_S(s::FreeFermionState, i::AbstractVector{<:Integer})
-    B = s.B[i,:]
-    vals = svdvals(B).^2
+    vals = svdvals(s.B[i,:])
     EE = 0.0
-    for x in vals
-        x > 1.0 && x-1.0 > 1e-6 && error("Got a Schmidt value λ = $x.")
-        x < 1e-14 && continue
+    for val in vals
+        val < 1e-7 && continue
+        val > 1.0 && x-1.0 > 1e-6 && error("Got a Schmidt value λ = $x.")
+        x = val ^ 2
         (y = 1.0 - x) < 1e-14 && continue
         EE -= x * log(x) + y * log(y)
     end
@@ -176,35 +153,80 @@ function ent_S(
     SAB = ent_S(s, vcat(i,j))
     SA + SB - SAB
 end
+
+
 #----------------------------------------------------------------------------------------------------
+# Operations
+#----------------------------------------------------------------------------------------------------
+orthogonalize(B::AbstractMatrix) = Matrix(qr(B).Q)
 """
-Multiply Unitary matrix to FreeFermionState.
+Normalize FreeFermionState.
 """
-function *(U::Unitary, s::FreeFermionState) 
-    FreeFermionState(U.M * s.B, true)
+function LinearAlgebra.normalize!(s::FreeFermionState) 
+    s.B = orthogonalize(s.B)
+    return s
 end
+
+
+
 #----------------------------------------------------------------------------------------------------
-"""
-Multiply general matrix to FreeFermionState, and by default normalize the output.
-"""
-function *(M::AbstractMatrix, s::FreeFermionState; normalize::Bool=true)
-    B_new = normalize ? orthogonalize(M * s.B) : M * s.B
-    FreeFermionState(B_new, true)
+# Gate Operation
+#----------------------------------------------------------------------------------------------------
+struct Gate{T<:AbstractMatrix}
+    M::T
+    I::Vector{Int64}
 end
 #----------------------------------------------------------------------------------------------------
 export apply!
 """
-    apply!(U::Unitary, s::FreeFermionState, ind::AbstractVector{<:Integer})
+Multiply general matrix to FreeFermionState, and by default normalize the output.
+"""
+function apply!(M::AbstractMatrix, s::FreeFermionState; normalize::Bool=false)
+    s.B = M * s.B
+    normalize && normalize!(s)
+    return s
+end
+#----------------------------------------------------------------------------------------------------
+"""
+    apply!(U, s::FreeFermionState, ind::AbstractVector{<:Integer})
+
+Apply local unitary to FreeFermionState `s` on sites `inds`.
+"""
+function apply!(M::AbstractMatrix, s::FreeFermionState, inds::AbstractVector{<:Integer}; normalize::Bool=false)
+    #target = view(s.B, inds, :)
+    B = s.B[inds, :]
+    C = Matrix{promote_type(eltype(M), eltype(B))}(undef, size(B))
+    A_mul_B!(C, M, B)
+    s.B[inds, :] = C
+    #A_mul_B!(target, M, s.B[inds, :])
+    #s.B[inds, :] = M * s.B[inds, :]
+    normalize && normalize!(s)
+    return s
+end
+apply!(G::Gate, s::FreeFermionState; normalize::Bool=false) = apply!(G.M, s, G.I; normalize)
+#----------------------------------------------------------------------------------------------------
+"""
+    apply!(U, s::FreeFermionState, ind::AbstractVector{<:Integer})
 
 Apply local unitary gate to FreeFermionState `s` on sites `inds`.
 """
-function apply!(U::Unitary, s::FreeFermionState, inds::AbstractVector{<:Integer})
-    s.B[inds, :] = U.M * s.B[inds, :]
-    s
+function apply!(
+    gates::AbstractVector{<:Gate}, 
+    s::FreeFermionState;
+    normalize::Bool=false,
+    nthreads=Threads.nthreads()
+)
+    Threads.@threads for sublist in dividerange(gates, nthreads)
+        @simd for gate in sublist
+            apply!(gate, s)
+        end
+    end
+    normalize && normalize!(s)
+    return s
 end
 
 #----------------------------------------------------------------------------------------------------
-# Quasi paritcle
+# Quantum Jumps
 #----------------------------------------------------------------------------------------------------
 export QuasiMode
 """
@@ -222,12 +244,8 @@ end
 #----------------------------------------------------------------------------------------------------
 vector(qm::QuasiMode) = sparsevec(qm.I, qm.V, qm.L)
 inner(qm::QuasiMode, s::FreeFermionState) = vec(qm.V' * s.B[qm.I, :])
-
-
-
 #----------------------------------------------------------------------------------------------------
-# Quantum Jumps
-#----------------------------------------------------------------------------------------------------
+export QuantumJump
 """
 abstract type for quantum jumps that preserve free fermion structure.
 """
@@ -238,9 +256,9 @@ export QJParticle
 """
 QJParticle: L = d⁺d
 """
-struct QJParticle{T1, T2, T3<:Real} <: QuantumJump
+struct QJParticle{T1, T2<:AbstractMatrix, T3<:Real} <: QuantumJump
     M::QuasiMode{T1}
-    P::Matrix{T2}
+    P::T2
     γdt::T3
 end
 QJParticle(M::QuasiMode, γdt::Real) = QJParticle(M, particle_exp(M, γdt), γdt)
@@ -249,9 +267,9 @@ export QJHole
 """
 QJHole: L = dd⁺
 """
-struct QJHole{T1, T2, T3<:Real} <: QuantumJump
+struct QJHole{T1, T2<:AbstractMatrix, T3<:Real} <: QuantumJump
     M::QuasiMode{T1}
-    P::Matrix{T2}
+    P::T2
     γdt::T3
 end
 QJHole(M::QuasiMode, γdt::Real) = QJHole(M, hole_exp(M, γdt), γdt)
@@ -260,9 +278,9 @@ export QJDrain
 """
 QJDrain: L = d 
 """
-struct QJDrain{T1, T2, T3<:Real} <: QuantumJump
+struct QJDrain{T1, T2<:AbstractMatrix, T3<:Real} <: QuantumJump
     M::QuasiMode{T1}
-    P::Matrix{T2}
+    P::T2
     γdt::T3
 end
 QJDrain(M::QuasiMode, γdt::Real) = QJDrain(M, particle_exp(M, γdt), γdt)
@@ -271,9 +289,9 @@ export QJSource
 """
 QJSource: L = d⁺
 """
-struct QJSource{T1, T2, T3<:Real} <: QuantumJump
+struct QJSource{T1, T2<:AbstractMatrix, T3<:Real} <: QuantumJump
     M::QuasiMode{T1}
-    P::Matrix{T2}
+    P::T2
     γdt::T3
 end
 QJSource(M::QuasiMode, γdt::Real) = QJSource(M, hole_exp(M, γdt), γdt)
@@ -283,10 +301,10 @@ Correaction operator if jump does not happen
     P = sqrt(1-γ⋅dt)d⁺d + dd⁺
 """
 function particle_exp(qm::QuasiMode, γdt::Real)
-    v = hcat(qm.V, nullspace(qm.V'))
-    d = ones(length(qm.I))
-    d[1] = sqrt(1-γdt)
-    v * Diagonal(d) * v'
+    v = qm.V
+    n = length(v)
+    mat = (sqrt(1-γdt)-1) * v * v' + I(n)
+    SMatrix{n,n}(mat)
 end
 #----------------------------------------------------------------------------------------------------
 """
@@ -294,43 +312,54 @@ Correaction operator if jump does not happen
     P = d⁺d + sqrt(1-γ⋅dt)dd⁺
 """
 function hole_exp(qm::QuasiMode, γdt::Real)
-    v = hcat(qm.V, nullspace(qm.V'))
-    d = fill(sqrt(1-γdt), length(qm.I))
-    d[1] = 1
-    v * Diagonal(d) * v'
+    v = qm.V
+    n = length(v)
+    a = sqrt(1-γdt)
+    mat = (1-a) * v * v' + a * I(n)
+    SMatrix{n,n}(mat)
 end
 
 
 #----------------------------------------------------------------------------------------------------
 # Weak measurement
 #----------------------------------------------------------------------------------------------------
-function jump(qj::QJParticle, s::FreeFermionState, p::AbstractVector; renorm::Bool=true)    # L = d⁺d
-    FreeFermionState(replace_vector(s.B, vector(qj.M), p; renorm), renorm)
+function apply!(qj::QJParticle, s::FreeFermionState, p::AbstractVector; renorm::Bool=true)    # L = d⁺d
+    replace_vector!(s.B, vector(qj.M), p)
+    renorm && normalize!(s)
+    return s
 end
-function jump(qj::QJHole, s::FreeFermionState, p::AbstractVector; renorm::Bool=true)        # L = dd⁺
-    FreeFermionState(avoid_vector(s.B, vector(qj.M), p; renorm), renorm)
+function apply!(qj::QJHole, s::FreeFermionState, p::AbstractVector; renorm::Bool=true)        # L = dd⁺
+    s.B = avoid_vector!(s.B, vector(qj.M), p; renorm)
+    renorm && normalize!(s)
+    return s
 end
-function jump(qj::QJDrain, s::FreeFermionState, p::AbstractVector; renorm::Bool=true)       # L = d
-    FreeFermionState(delete_vector(s.B, vector(qj.M), p; renorm), renorm)
+function apply!(::QJDrain, s::FreeFermionState, p::AbstractVector; renorm::Bool=true)         # L = d
+    s.B = delete_vector(s.B, p)
+    renorm && normalize!(s)
+    return s
 end
-function jump(qj::QJSource, s::FreeFermionState, p::AbstractVector; renorm::Bool=true)      # L = d⁺
-    FreeFermionState(insert_vector(s.B, vector(qj.M); renorm), renorm)
+function apply!(qj::QJSource, s::FreeFermionState, ::AbstractVector; renorm::Bool=true)       # L = d⁺
+    s.B = insert_vector(s.B, vector(qj.M))
+    renorm && normalize!(s)
+    return s
+end
+function apply!(qj::QuantumJump, s::FreeFermionState) 
+    apply!(qj, s, inner(qj.M, s))
 end
 #----------------------------------------------------------------------------------------------------
 """
 Apply quantum jump on a free fermion state `s`
 
-First decide whether jump happen:
-    Y: return the jumped state.
-    N: apply a correction `P` to `s`.
+Return whether jump happened
 """
-function *(qj::QuantumJump, s::FreeFermionState)
+function apply!(qj::QuantumJump, s::FreeFermionState)
     v = inner(qj.M, s)
-    if rand() < real(dot(v, v)) * qj.γdt
-        return jump(qj, s, v)
+    if rand() < norm(v)^2 * qj.γdt
+        apply!(qj, s, v)
+        return true
     else
-        s.B[qj.M.I, :] .= qj.P * s.B[qj.M.I, :]
-        return FreeFermionState(orthogonalize(s.B), true)
+        apply!(qj.P, s, qj.M.I; normalize=true)
+        return false
     end
 end
 #----------------------------------------------------------------------------------------------------
@@ -339,19 +368,20 @@ Apply multiple quantum jumps on a free fermion state.
 
 Note that indices of the jumps should have no overlap.
 """
-function *(qjs::AbstractVector{<:QuantumJump}, s::FreeFermionState)
+function apply!(qjs::AbstractVector{<:QuantumJump}, s::FreeFermionState)
     normQ = true
     for qj in qjs
         v = inner(qj.M, s)
         if rand() < real(dot(v, v)) * qj.γdt
-            s = jump(qj, s, v)
+            apply!(qj, s, v)
             normQ = true
         else
-            s.B[qj.M.I, :] .= qj.P * s.B[qj.M.I, :]
+            apply!(qj.P, s, qj.M.I)
             normQ = false
         end
     end
-    normQ ? s : FreeFermionState(orthogonalize(s.B), true)
+    normQ || normalize!(s)
+    return s
 end
 
 #----------------------------------------------------------------------------------------------------
@@ -368,17 +398,17 @@ struct ConditionalJump{T<:QuantumJump, Tm<:AbstractMatrix}
     U::Tm
 end
 #----------------------------------------------------------------------------------------------------
-function *(cj::ConditionalJump, s::FreeFermionState)
+function apply!(cj::ConditionalJump, s::FreeFermionState)
     v = inner(cj.J.M, s)
     ind = cj.J.M.I
     if rand() < real(dot(v, v)) * cj.J.γdt
-        s = jump(cj.J, s, v)
-        s.B[ind, :] .= cj.U * s.B[ind, :] 
+        apply!(cj.J, s, v)
+        apply!(cj.U, s, ind)
+        return true
     else
-        s.B[ind, :] .= cj.J.P * s.B[ind, :]
-        s = FreeFermionState(orthogonalize(s.B), true)
+        apply!(cj.J.P, ind; normalize=true)
+        return false
     end
-    s
 end
 #----------------------------------------------------------------------------------------------------
 """
@@ -386,22 +416,23 @@ Apply a list of quantum jumps with condional feedback.
 
 Note that indices of the jumps should have no overlap.
 """
-function *(cjs::AbstractVector{<:ConditionalJump}, s::FreeFermionState)
+function apply!(cjs::AbstractVector{<:ConditionalJump}, s::FreeFermionState)
     normQ = true
     for cj in cjs
         qj = cj.J
         ind = qj.M.I
         v = inner(qj.M, s)
         if rand() < real(dot(v, v)) * qj.γdt
-            s = jump(qj, s, v)
-            s.B[ind, :] .= cj.U * s.B[ind, :]
+            apply!(qj, s, v)
+            apply!(cj.U, s, ind)
             normQ = true
         else
-            s.B[ind, :] .= qj.P * s.B[ind, :]
+            apply!(qj.P, s, ind)
             normQ = false
         end
     end
-    normQ ? s : FreeFermionState(orthogonalize(s.B), true)
+    normQ || normalize!(s)
+    return s
 end
 
 
@@ -422,14 +453,55 @@ function wiener!(
         for qm in qmsi
             p = inner(qm, s)
             a = randn() * sgdt + (2 * norm(p)^2 - 1) * γdt
-            cv = (exp(a) - 1) * qm.V
-            for j in axes(s.B, 2)
-                s.B[qm.I, j] += cv * p[j]
-            end
+            m = (exp(a) - 1) * qm.V * qm.V' + I
+            apply!(m, s, qm.I)
         end
     end
-    s.B .= orthogonalize(s.B)
+    normalize!(s)
 end
+
+
+#----------------------------------------------------------------------------------------------------
+# Projective measurement
+#----------------------------------------------------------------------------------------------------
+export measure
+"""
+Projective Measure
+"""
+function measure!(qm::QuasiMode, s::FreeFermionState)
+    v = vector(qm)
+    p = (v' * s.B)[:]
+    if rand() < real(dot(p, p))
+        s.B = replace_vector(s.B, v, p)
+        return true
+    else
+        s.B = avoid_vector(s.B, v, p)
+        return false
+    end
+end
+#----------------------------------------------------------------------------------------------------
+export ConditionalMeasure
+"""
+Measurement with conditional feddback
+
+First decided the outcome of the measurement (true/false), then apply (Ut/Uf) feedback.
+"""
+struct ConditionalMeasure{T<:QuasiMode, Tm1<:AbstractMatrix, Tm2<:AbstractMatrix}
+    M::T
+    Ut::Tm1
+    Uf::Tm2
+end
+#----------------------------------------------------------------------------------------------------
+function apply!(cm::ConditionalMeasure, s::FreeFermionState)
+    q = measure(cm.M, s)
+    apply!(q ? cm.Ut : cm.Uf, s, cj.M.I)
+    q
+end
+
+
+#----------------------------------------------------------------------------------------------------
+# Helper
+#----------------------------------------------------------------------------------------------------
 function dividerange(vec::AbstractVector, nthreads::Integer)
     list = Vector{Vector{eltype(vec)}}(undef, nthreads)
     eachthreads, left = divrem(length(vec), nthreads)
@@ -448,42 +520,6 @@ function dividerange(vec::AbstractVector, nthreads::Integer)
     list
 end
 
-#----------------------------------------------------------------------------------------------------
-# Projective measurement
-#----------------------------------------------------------------------------------------------------
-export measure
-"""
-Projective Measure
-"""
-function measure(qm::QuasiMode, s::FreeFermionState)
-    v = vector(qm)
-    p = (v' * s.B)[:]
-    if rand() < real(dot(p, p))
-        B = replace_vector(s.B, v, p)
-        true, FreeFermionState(B, true)
-    else
-        B = avoid_vector(s.B, v, p)
-        false, FreeFermionState(B, true)
-    end
-end
-#----------------------------------------------------------------------------------------------------
-export ConditionalMeasure
-"""
-Measurement with conditional feddback
 
-First decided the outcome of the measurement (true/false), then apply (Ut/Uf) feedback.
-"""
-struct ConditionalMeasure{T<:QuasiMode, Tm1<:AbstractMatrix, Tm2<:AbstractMatrix}
-    M::T
-    Ut::Tm1
-    Uf::Tm2
-end
-#----------------------------------------------------------------------------------------------------
-function *(cm::ConditionalMeasure, s::FreeFermionState)
-    q, s2 = measure(cm.M, s)
-    ind = cj.M.I
-    s2.B[ind, :] .= (q ? cm.Ut : cm.Uf) * s2.B[ind, :] 
-    s2
-end
 
 

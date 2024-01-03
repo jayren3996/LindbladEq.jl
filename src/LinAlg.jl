@@ -1,13 +1,6 @@
 #----------------------------------------------------------------------------------------------------
 # Evolution under unitary matrices
 #----------------------------------------------------------------------------------------------------
-"""
-Data type for Unitary matrices
-"""
-struct Unitary{T <: AbstractMatrix} 
-    M::T
-end
-#----------------------------------------------------------------------------------------------------
 export evo_operator
 """
     evo_operator(H::Hermitian, dt::Real)
@@ -17,65 +10,28 @@ Exponential for Hermitian matrix.
 function evo_operator(H::Hermitian, dt::Real)
     vals, vecs = eigen(H)
     D = exp.(-dt * im * vals) |> Diagonal
-    Unitary(vecs * D * vecs')
+    vecs * D * vecs'
 end
 #----------------------------------------------------------------------------------------------------
-"""
-    evo_operator(H::AbstractMatrix, dt::Real; order::Integer=10)
-
-Exponential for general matrix using series expansion.
-"""
-function evo_operator(H::AbstractMatrix, dt::Real; order::Integer=10)
-    N = round(Int, 10 * dt * maximum(abs, H))
-    iszero(N) && (N = 1)
-    expm(-dt*im*H/N, order)^N
-end
-#----------------------------------------------------------------------------------------------------
-"""
-    expm(A::AbstractMatrix, order::Integer=10)
-
-Matrix exponential using Taylor expansion.
-"""
-function expm(A::AbstractMatrix, order::Integer=10)
-    mat = I + A / order
-    order -= 1
-    while order > 0
-        mat = A * mat
-        mat ./= order
-        mat += I
-        order -= 1
-    end
-    mat
-end
-#----------------------------------------------------------------------------------------------------
-"""
-    expv(A, v::AbstractVecOrMat, order::Integer=10)
-
-Compute exp(A)*v using Taylor expansion
-"""
-function expv(A, v::AbstractVecOrMat, order::Integer=10)
-    vec = v + A * v / order
-    order -= 1
-    while order > 0
-        vec = A * vec
-        vec ./= order
-        vec += v
-        order -= 1
-    end
-    vec
-end
-#----------------------------------------------------------------------------------------------------
-export rand_unitary
 """
     rand_unitary(N::Integer)
 
 Generate random unitary matrix. 
 """
 function rand_unitary(N::Integer)
-    F = qr(randn(ComplexF64, N,N)) 
-    Unitary(Matrix(F.Q))
+    F = qr(randn(ComplexF64, N, N)) 
+    Matrix(F.Q)
 end
-
+#----------------------------------------------------------------------------------------------------
+function A_mul_B!(C, A, B)
+    @turbo warn_check_args=false for n ∈ indices((C,B), 2), m ∈ indices((C,A), 1)
+        Cmn = zero(eltype(C))
+        for k ∈ indices((A,B), (2,1))
+            Cmn += A[m,k] * B[k,n]
+        end
+        C[m,n] = Cmn
+    end
+end
 
 #----------------------------------------------------------------------------------------------------
 # Helper
@@ -89,40 +45,57 @@ vector `v`, then calculate the vectors
     |Ãᵢ⟩ := |Aᵢ⟩ - (⟨v|Aᵢ⟩/⟨v|Aₚ⟩) * |Aₚ⟩,  i ≠ p.
 The set of vectors {|Ãᵢ⟩} span the null space of `v`, though not orthogonal.
 """
-function delete_vector(A::AbstractMatrix, v::AbstractVector, vA::AbstractVector; renorm::Bool=true)
+function delete_vector(A::AbstractMatrix, vA::AbstractVector)
     mat = Matrix{eltype(vA)}(undef, size(A, 1), size(A, 2)-1)
     p = argmax(abs.(vA))
     Ap = A[:, p] / vA[p]
-    mat[:, 1] .= v 
-    for i = 1:p-1
-        mat[:, i] .= A[:, i] - vA[i] * Ap
+    inner_itr = eachindex(Ap)
+    @tturbo warn_check_args=false for i in 1:p-1
+        for j in inner_itr
+            mat[j, i] = A[j, i] - vA[i] * Ap[j]
+        end
     end
-    for i = p+1:size(A, 2)
-        mat[:, i-1] .= A[:, i] - vA[i] * Ap
+    @tturbo warn_check_args=false for i in p+1:size(A, 2)
+        for j in inner_itr
+            mat[j, i-1] = A[j, i] - vA[i] * Ap[j]
+        end
     end
-    renorm ? orthogonalize(mat) : mat
+    mat
 end
 #----------------------------------------------------------------------------------------------------
-function replace_vector(A::AbstractMatrix, v::AbstractVector, vA::AbstractVector; renorm::Bool=true)
-    mat = Matrix{eltype(vA)}(undef, size(A, 1), size(A, 2))
-    mat[:, 1] .= v 
-    mat[:, 2:end] .= delete_vector(A, v, vA; renorm)
-    mat
+function replace_vector!(A::AbstractMatrix, v::AbstractVector, vA::AbstractVector)
+    p = argmax(abs.(vA))
+    Ap = A[:, p] / vA[p]
+    A[:, p] = v
+    inner_itr = eachindex(Ap)
+    @tturbo warn_check_args=false for i in 1:p-1
+        for j in inner_itr
+            A[j, i] -= vA[i] * Ap[j]
+        end
+    end
+    @tturbo warn_check_args=false for i in p+1:size(A, 2)
+        for j in inner_itr
+            A[j, i] -= vA[i] * Ap[j]
+        end
+    end
+    A
 end
 #----------------------------------------------------------------------------------------------------
 """
 Compute null vectors:
     |A'ᵢ⟩ = |Aᵢ⟩ - ⟨v|Aᵢ⟩|v⟩
 """
-function avoid_vector(A::AbstractMatrix, v::AbstractVector, vA::AbstractVector; renorm::Bool=true)
-    mat = Matrix{eltype(vA)}(undef, size(A, 1), size(A, 2))
-    for i in axes(A, 2)
-        mat[:, i] .= A[:, i] - vA[i] * v
+function avoid_vector!(A::AbstractMatrix, v::AbstractVector, vA::AbstractVector)
+    inner_itr = eachindex(v)
+    @tturbo warn_check_args=false for i in axes(A, 2)
+        for j in inner_itr
+            A[j, i] -= vA[i] * v[j]
+        end
     end
-    renorm ? orthogonalize(mat) : mat
+    A
 end
 #--------------------------------------------------------------------------------
-function insert_vector(A::AbstractMatrix, v::AbstractVector; renorm::Bool=true)
+function insert_vector(A::AbstractMatrix, v::AbstractVector)
     mat = hcat(v, A)
-    renorm ? orthogonalize(mat) : mat
+    mat
 end

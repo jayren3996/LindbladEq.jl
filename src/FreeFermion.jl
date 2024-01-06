@@ -11,13 +11,21 @@ Represented by a matrix `B`,
     bₖ⁺ = ∑ᵢ cᵢ⁺ Bᵢₖ.
 A `FreeFermionState` object `s` can be access as a matrix.
 The element `s[i,j]` is the two-point function ⟨cᵢ⁺cⱼ⟩.
+
+Notes:
+------
+Since most of the modifications of the free fermion state is designed to be inplace, by default the
+element type of B should be complex.
 """
 mutable struct FreeFermionState{T<:Number}
     B::Matrix{T}
 end
+
+#----------------------------------------------------------------------------------------------------
+# Construction
 #----------------------------------------------------------------------------------------------------
 """
-    FreeFermionState(dtype::DataType, pos::AbstractVector{<:Integer}, L::Integer)
+    FreeFermionState(pos::AbstractVector{<:Integer}, L::Integer; dtype::DataType)
 
 Initialize FreeFermionState with given data type, particle positions and system length.
 
@@ -25,7 +33,7 @@ Inputs:
 -------
 pos  : vector of occupied positions.
 L    : length.
-dtype: data type of representing matrix B.
+dtype: data type of representing matrix B, default to be complex.
 """
 function FreeFermionState(pos::AbstractVector{<:Integer}, L::Integer; dtype::DataType=ComplexF64)
     B = zeros(dtype, L, length(pos))
@@ -57,6 +65,15 @@ end
     FreeFermionState(;L::Integer, N::Integer, config::String="Z2")
 
 More initial configuration.
+
+Inputs:
+-------
+L     : Length.
+N     : Number of fermions.
+config: Product state configuration:
+    - left/right/center
+    - random 
+    - Zn
 """
 function FreeFermionState(;L::Integer, N::Integer, config::String="Z2")
     pos = if config == "center"
@@ -88,7 +105,9 @@ Base.length(s::FreeFermionState) = size(s.B, 1)
 Compute correlation ⟨cᵢ⁺cⱼ⟩
 """
 function Base.getindex(s::FreeFermionState, i::Integer, j::Integer) 
-    return dot(s.B[i,:], s.B[j,:])
+    Bi = view(s.B, i, :)
+    Bj = view(s.B, j, :)
+    return dot(Bi, Bj)
 end
 #----------------------------------------------------------------------------------------------------
 """
@@ -130,7 +149,7 @@ function ent_S(s::FreeFermionState, i::AbstractVector{<:Integer})
     EE = 0.0
     for val in vals
         val < 1e-7 && continue
-        val > 1.0 && x-1.0 > 1e-6 && error("Got a Schmidt value λ = $x.")
+        val > 1.0 && val-1.0 > 1e-6 && error("Got a Schmidt value λ = $val.")
         x = val ^ 2
         (y = 1.0 - x) < 1e-14 && continue
         EE -= x * log(x) + y * log(y)
@@ -141,7 +160,8 @@ end
 """
     entropy(s::FreeFermionState, i::AbstractVector{<:Integer}, j::AbstractVector{<:Integer})
 
-Mutual information for FreeFermionState.
+Mutual information:
+    I(A:B) = S(A) + S(B) - S(A∪B)
 """
 function ent_S(
     s::FreeFermionState, 
@@ -158,13 +178,11 @@ end
 #----------------------------------------------------------------------------------------------------
 # Operations
 #----------------------------------------------------------------------------------------------------
-orthogonalize(B::AbstractMatrix) = Matrix(qr(B).Q)
 """
 Normalize FreeFermionState.
 """
 function LinearAlgebra.normalize!(s::FreeFermionState) 
-    s.B = orthogonalize(s.B)
-    return s
+    s.B = Matrix(qr!(s.B).Q)
 end
 
 
@@ -172,6 +190,7 @@ end
 #----------------------------------------------------------------------------------------------------
 # Gate Operation
 #----------------------------------------------------------------------------------------------------
+export Gate
 struct Gate{T<:AbstractMatrix}
     M::T
     I::Vector{Int64}
@@ -192,18 +211,26 @@ end
 
 Apply local unitary to FreeFermionState `s` on sites `inds`.
 """
-function apply!(M::AbstractMatrix, s::FreeFermionState, inds::AbstractVector{<:Integer}; normalize::Bool=false)
-    #target = view(s.B, inds, :)
+function apply!(
+    M::AbstractMatrix, 
+    s::FreeFermionState, 
+    inds::AbstractVector{<:Integer}; 
+    normalize::Bool=false,
+    threads::Bool=false
+)
     B = s.B[inds, :]
-    C = Matrix{promote_type(eltype(M), eltype(B))}(undef, size(B))
-    A_mul_B!(C, M, B)
-    s.B[inds, :] = C
-    #A_mul_B!(target, M, s.B[inds, :])
-    #s.B[inds, :] = M * s.B[inds, :]
+    Bv = view(s.B, inds, :)
+    threads ? tturbo_mul!(Bv, M, B) : turbo_mul!(Bv, M, B)
     normalize && normalize!(s)
     return s
 end
-apply!(G::Gate, s::FreeFermionState; normalize::Bool=false) = apply!(G.M, s, G.I; normalize)
+function apply!(
+    G::Gate, s::FreeFermionState; 
+    normalize::Bool=false,
+    threads::Bool=false
+) 
+    apply!(G.M, s, G.I; normalize, threads)
+end
 #----------------------------------------------------------------------------------------------------
 """
     apply!(U, s::FreeFermionState, ind::AbstractVector{<:Integer})
@@ -213,13 +240,10 @@ Apply local unitary gate to FreeFermionState `s` on sites `inds`.
 function apply!(
     gates::AbstractVector{<:Gate}, 
     s::FreeFermionState;
-    normalize::Bool=false,
-    nthreads=Threads.nthreads()
+    normalize::Bool=false
 )
-    Threads.@threads for sublist in dividerange(gates, nthreads)
-        @simd for gate in sublist
-            apply!(gate, s)
-        end
+    Threads.@threads for gate in gates
+        apply!(gate, s)
     end
     normalize && normalize!(s)
     return s
@@ -243,7 +267,15 @@ struct QuasiMode{T<:Number}
 end
 #----------------------------------------------------------------------------------------------------
 vector(qm::QuasiMode) = sparsevec(qm.I, qm.V, qm.L)
-inner(qm::QuasiMode, s::FreeFermionState) = vec(qm.V' * s.B[qm.I, :])
+#----------------------------------------------------------------------------------------------------
+function inner!(out::Vector, qm::QuasiMode, s::FreeFermionState) 
+    turbo_dot!(out, qm.V, s.B, qm.I)
+end
+function inner(qm::QuasiMode, s::FreeFermionState) 
+    out = Vector{ComplexF64}(undef, size(s.B, 2))
+    inner!(out, qm, s)
+    out
+end
 #----------------------------------------------------------------------------------------------------
 export QuantumJump
 """
@@ -354,11 +386,11 @@ Return whether jump happened
 """
 function apply!(qj::QuantumJump, s::FreeFermionState)
     v = inner(qj.M, s)
-    if rand() < norm(v)^2 * qj.γdt
+    if rand() < real(dot(v, v)) * qj.γdt
         apply!(qj, s, v)
         return true
     else
-        apply!(qj.P, s, qj.M.I; normalize=true)
+        apply!(qj.P, s, qj.M.I; normalize=true, threads=true)
         return false
     end
 end
@@ -370,13 +402,14 @@ Note that indices of the jumps should have no overlap.
 """
 function apply!(qjs::AbstractVector{<:QuantumJump}, s::FreeFermionState)
     normQ = true
+    v = Vector{ComplexF64}(undef, size(s.B, 2))
     for qj in qjs
-        v = inner(qj.M, s)
+        inner!(v, qj.M, s)
         if rand() < real(dot(v, v)) * qj.γdt
             apply!(qj, s, v)
             normQ = true
         else
-            apply!(qj.P, s, qj.M.I)
+            apply!(qj.P, s, qj.M.I; threads=true)
             normQ = false
         end
     end
@@ -406,7 +439,7 @@ function apply!(cj::ConditionalJump, s::FreeFermionState)
         apply!(cj.U, s, ind)
         return true
     else
-        apply!(cj.J.P, ind; normalize=true)
+        apply!(cj.J.P, s, ind; normalize=true, threads=true)
         return false
     end
 end
@@ -418,16 +451,17 @@ Note that indices of the jumps should have no overlap.
 """
 function apply!(cjs::AbstractVector{<:ConditionalJump}, s::FreeFermionState)
     normQ = true
+    v = Vector{ComplexF64}(undef, size(s.B, 2))
     for cj in cjs
         qj = cj.J
         ind = qj.M.I
-        v = inner(qj.M, s)
+        inner!(v, qj.M, s)
         if rand() < real(dot(v, v)) * qj.γdt
             apply!(qj, s, v)
             apply!(cj.U, s, ind)
             normQ = true
         else
-            apply!(qj.P, s, ind)
+            apply!(qj.P, s, ind; threads=true)
             normQ = false
         end
     end
@@ -446,18 +480,31 @@ Wiener process:
 """
 function wiener!(
     qms::AbstractVector{<:QuasiMode}, s::FreeFermionState, γdt::Real; 
-    nthreads=Threads.nthreads()
+    threads::Bool=length(qms)>100
 )
     sgdt = sqrt(γdt)
-    Threads.@threads for qmsi in dividerange(qms, nthreads)
-        for qm in qmsi
-            p = inner(qm, s)
-            a = randn() * sgdt + (2 * norm(p)^2 - 1) * γdt
-            m = (exp(a) - 1) * qm.V * qm.V' + I
-            apply!(m, s, qm.I)
+    if threads
+        Threads.@threads for qmsi in dividerange(qms, Threads.nthreads())
+            _wiener_for!(qmsi, s, γdt, sgdt)
         end
+    else
+        _wiener_for!(qms, s, γdt, sgdt)
     end
     normalize!(s)
+end
+
+function _wiener_for!(
+    qms::AbstractVector{<:QuasiMode}, 
+    s::FreeFermionState, 
+    γdt::Real, sgdt::Real
+)
+    p = Vector{ComplexF64}(undef, size(s.B, 2))
+    for qm in qms
+        inner!(p, qm, s)
+        a = randn() * sgdt + (2 * real(dot(p, p)) - 1) * γdt
+        m = (exp(a) - 1) * qm.V * qm.V' + I
+        apply!(m, s, qm.I)
+    end
 end
 
 
@@ -469,8 +516,7 @@ export measure
 Projective Measure
 """
 function measure!(qm::QuasiMode, s::FreeFermionState)
-    v = vector(qm)
-    p = (v' * s.B)[:]
+    p = inner(qm, s)
     if rand() < real(dot(p, p))
         s.B = replace_vector(s.B, v, p)
         return true
@@ -494,7 +540,7 @@ end
 #----------------------------------------------------------------------------------------------------
 function apply!(cm::ConditionalMeasure, s::FreeFermionState)
     q = measure(cm.M, s)
-    apply!(q ? cm.Ut : cm.Uf, s, cj.M.I)
+    apply!(q ? cm.Ut : cm.Uf, s, cj.M.I; threads=true)
     q
 end
 

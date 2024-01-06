@@ -23,13 +23,43 @@ function rand_unitary(N::Integer)
     Matrix(F.Q)
 end
 #----------------------------------------------------------------------------------------------------
-function A_mul_B!(C, A, B)
+function turbo_mul!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix)
     @turbo warn_check_args=false for n ∈ indices((C,B), 2), m ∈ indices((C,A), 1)
         Cmn = zero(eltype(C))
         for k ∈ indices((A,B), (2,1))
             Cmn += A[m,k] * B[k,n]
         end
         C[m,n] = Cmn
+    end
+end
+#----------------------------------------------------------------------------------------------------
+function turbo_mul!(C::AbstractVector, A::AbstractMatrix, B::AbstractVector)
+    @turbo warn_check_args=false for n ∈ eachindex(C)
+        Cn = zero(eltype(C))
+        for k ∈ eachindex(B)
+            Cn += A[n,k] * B[k]
+        end
+        C[n] = Cn
+    end
+end
+#----------------------------------------------------------------------------------------------------
+function tturbo_mul!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix)
+    @tturbo warn_check_args=false for n ∈ indices((C,B), 2), m ∈ indices((C,A), 1)
+        Cmn = zero(eltype(C))
+        for k ∈ indices((A,B), (2,1))
+            Cmn += A[m,k] * B[k,n]
+        end
+        C[m,n] = Cmn
+    end
+end
+#----------------------------------------------------------------------------------------------------
+function turbo_dot!(C::AbstractVector, v::AbstractVector, B::AbstractMatrix, inds::AbstractVector{<:Integer})
+    @turbo warn_check_args=false for n in eachindex(C)
+        Cn = zero(eltype(C))
+        for (i, k) in enumerate(inds)
+            Cn += conj(v[i]) * B[k, n]
+        end
+        C[n] = Cn
     end
 end
 

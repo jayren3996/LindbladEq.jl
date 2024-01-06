@@ -20,7 +20,7 @@ Jump operator
 function qparticles(d, L)
     nd = normalize(d)
     num = length(d) 
-    [QuasiMode(i:i+num-1, nd, L) for i in 1:L-num+1]
+    [QuasiMode(i:i+num-1, nd, L) for i in 1:num:L-num+1]
 end
 
 
@@ -58,7 +58,7 @@ using quantum state diffusion.
 function qsd_den_evo(;
     L=32, γ=0.5, dt=0.05, T=20, 
     times=64, PBC=false,
-    d=[1,1,1]
+    d=[1,1,1], threads=false
 )
     Ut = H_evo(;L, dt, PBC)
     qms = qparticles(d, L)
@@ -69,7 +69,7 @@ function qsd_den_evo(;
         den = zeros(L, N)
         for k = 1:N 
             apply!(Ut, s)
-            wiener!(qms, s, γ*dt)
+            wiener!(qms, s, γ*dt; threads)
             den[:, k] = diag(s)
         end
         den
@@ -89,8 +89,8 @@ function majorana_den_evo(;
         nd = normalize(d)
         num = length(d)
         mat = sqrt(γ) * nd * nd' 
-        M = fill(mat, L-num+1)
-        I = [i:i+num-1 for i in 1:L-num+1]
+        I = [i:i+num-1 for i in 1:num:L-num+1]
+        M = fill(mat, length(I))
         quadraticlindblad_from_fermion(;H, M, I)
     end
     Γ = covariancematrix([ones(Int,L÷2); zeros(Int,L÷2)])
@@ -114,8 +114,8 @@ function fermion_den_evo(;
         nd = normalize(d)
         num = length(d)
         mat = sqrt(γ) * nd * nd' 
-        M = fill(mat, L-num+1)
-        I = [i:i+num-1 for i in 1:L-num+1]
+        I = [i:i+num-1 for i in 1:num:L-num+1]
+        M = fill(mat, length(I))
         fermionlindblad(H, M, I)
     end
 
@@ -130,19 +130,17 @@ function fermion_den_evo(;
 end
 
 function main(;d=[1,3,1],times=1000)
-    # 2.45 s
+    # ~ 2.45 s
     @time den1 = majorana_den_evo(;d)
-    # 1.59 s
+    # ~ 1.59 s
     @time den2 = fermion_den_evo(;d)
     println("Majorana vs Fermion: $(norm(den1-den2))")
 
-    # 76.57 s
-    # A_mul_B!: 37.73 s
+    # ~ 22 s
     @time den3 = jump_den_evo(;d,times)
     println("Jump vs Fermion: $(norm(den3-den2))")
 
-    # 98.70 s
-    # A_mul_B!: 78.53 s
+    # ~ 21 s
     @time den4 = qsd_den_evo(;d,times)
     println("QSD vs Fermion: $(norm(den4-den2))")
 

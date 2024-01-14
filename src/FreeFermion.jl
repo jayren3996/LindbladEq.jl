@@ -196,6 +196,11 @@ struct Gate{T<:AbstractMatrix}
     I::Vector{Int64}
 end
 #----------------------------------------------------------------------------------------------------
+function *(M::AbstractMatrix, s::FreeFermionState)
+    B = M * s.B
+    FreeFermionState(B)
+end
+#----------------------------------------------------------------------------------------------------
 export apply!
 """
 Multiply general matrix to FreeFermionState, and by default normalize the output.
@@ -240,10 +245,17 @@ Apply local unitary gate to FreeFermionState `s` on sites `inds`.
 function apply!(
     gates::AbstractVector{<:Gate}, 
     s::FreeFermionState;
-    normalize::Bool=false
+    normalize::Bool=false,
+    threads::Bool=length(gates)>100
 )
-    Threads.@threads for gate in gates
-        apply!(gate, s)
+    if threads
+        Threads.@threads for gate in gates
+            apply!(gate, s)
+        end
+    else
+        for gate in gates
+            apply!(gate, s)
+        end
     end
     normalize && normalize!(s)
     return s
@@ -375,9 +387,6 @@ function apply!(qj::QJSource, s::FreeFermionState, ::AbstractVector; renorm::Boo
     renorm && normalize!(s)
     return s
 end
-function apply!(qj::QuantumJump, s::FreeFermionState) 
-    apply!(qj, s, inner(qj.M, s))
-end
 #----------------------------------------------------------------------------------------------------
 """
 Apply quantum jump on a free fermion state `s`
@@ -479,7 +488,9 @@ Wiener process:
     ψ → exp{∑ⱼ[δWⱼ + (2⟨nⱼ⟩-1)γ δt]nⱼ} ψ
 """
 function wiener!(
-    qms::AbstractVector{<:QuasiMode}, s::FreeFermionState, γdt::Real; 
+    qms::AbstractVector{<:QuasiMode}, 
+    s::FreeFermionState, 
+    γdt::Real; 
     threads::Bool=length(qms)>100
 )
     sgdt = sqrt(γdt)

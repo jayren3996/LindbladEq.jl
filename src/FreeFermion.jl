@@ -529,10 +529,12 @@ Projective Measure
 function measure!(qm::QuasiMode, s::FreeFermionState)
     p = inner(qm, s)
     if rand() < real(dot(p, p))
-        s.B = replace_vector!(s.B, vector(qm), p)
+        replace_vector!(s.B, vector(qm), p) 
+        normalize!(s)
         return true
     else
-        s.B = avoid_vector!(s.B, vector(qm), p)
+        avoid_vector!(s.B, vector(qm), p)
+        normalize!(s)
         return false
     end
 end
